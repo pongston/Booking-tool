@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ระบบใบจองงาน — ลองเบิ่ง</title>
+  
+  <!-- Google Fonts: Sarabun -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- React & React DOM CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel Compiler for In-Browser JSX Parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.4/babel.min.js"></script>
+
+  <!-- SheetJS (xlsx) CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #f0f4f0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Root React Node -->
+  <div id="root"></div>
+
+  <!-- React Code Transpiled by Babel -->
+  <script type="text/babel">
+    const { useState, useCallback } = React;
+
+    const toBE = (jsDate) => {
+      const d = new Date(jsDate);
+      const dd = String(d.getDate()).padStart(2,"0");
+      const mm = String(d.getMonth()+1).padStart(2,"0");
+      const yy = String(d.getFullYear()+543).slice(-2);
+      return `${dd}/${mm}/${yy}`;
+    };
+    const toInputValue = (d) => new Date(d).toISOString().split("T")[0];
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+
+    const DEFAULT_CUSTOMERS = ["ลูกค้า ","ลูกค้า B","ลูกค้า C"];
+    const STRUCTURES = ["","กันสาดชั้น2","คาน","พื้น","เสา","ผนัง","หลังคา","ฐานราก","สแลป","บ่อ","ถนน"];
+    const QC_OPTIONS = ["","QC","ผ่าน","ไม่ผ่าน"];
+    const PLAN_OPT   = ["","แพล้น A","แพล้น B","แพล้น C"];
+
+    const blankRow = (override={}) => ({
+      id: crypto.randomUUID(),
+      customer:"", customerCode:"", siteCode:"",
+      unit:"", time:"", structure:"", productCode:"",
+      qty:"", qc:"", plan:"", bookedBy:"", phone:"", note:"",
+      ...override,
+    });
+
+    const C = {
+      green:"#1a5c38", gl:"#2d8653", gp:"#e8f5e9",
+      amber:"#f59e0b", ap:"#fffbeb",
+      red:"#dc2626", blue:"#1e40af", gray:"#6b7280",
+    };
+
+    const Btn = ({onClick,disabled,bg,children,style={}}) => (
+      <button onClick={onClick} disabled={disabled} style={{
+        background:disabled?"#9ca3af":bg, color:"#fff", border:"none",
+        borderRadius:8, padding:"8px 16px", fontSize:12, fontWeight:700,
+        cursor:disabled?"default":"pointer", ...style,
+      }}>{children}</button>
+    );
+
+    const askClaude = async (system, user) => {
+      const sample = await claude.use("sample");
+      if (!sample) throw new Error("ฟีเจอร์ AI ใช้ไม่ได้ในมุมมองนี้");
+      const r = await sample(`${system}\n\n${user}`, {cache:false});
+      return r.text;
+    };
+
+    function KoratBooking() {
+      const [rows,      setRows]      = useState([blankRow(), blankRow()]);
+      const [bookDate,  setBookDate]  = useState(toInputValue(tomorrow));
+      const [lineText,  setLineText]  = useState("");
+      const [parsing,   setParsing]   = useState(false);
+      const [parseMsg,  setParseMsg]  = useState("");
+      const [aiLoading, setAiLoading] = useState(false);
+      const [aiMsg,     setAiMsg]     = useState("");
+      const [chat,      setChat]      = useState("");
+      const [chatOut,   setChatOut]   = useState("");
+      const [chatBusy,  setChatBusy]  = useState(false);
+      const [saved,     setSaved]     = useState(false);
+      const [tab,       setTab]       = useState("table");
+      const [customers, setCustomers] = useState(DEFAULT_CUSTOMERS);
+
+      const addCustomer = (rowId) => {
+        const name = window.prompt("ชื่อลูกค้าใหม่:");
+        if (!name || !name.trim()) return;
+        const trimmed = name.trim();
+        setCustomers(c => c.includes(trimmed) ? c : [...c, trimmed]);
+        if (rowId) setCell(rowId, "customer", trimmed);
+      };
+
+      const beDate = toBE(new Date(bookDate));
+      const totalQty = rows.reduce((s,r)=>s+(parseFloat(r.qty)||0),0);
+
+      const addRow  = ()          => setRows(r=>[...r, blankRow()]);
+      const delRow  = (id)        => setRows(r=>r.filter(x=>x.id!==id));
+      const setCell = (id,f,v)   => setRows(r=>r.map(x=>x.id===id?{...x,[f]:v}:x));
+
+      const parseLineMessage = async () => {
+        if (!lineText.trim()) return;
+        setParsing(true); setParseMsg("🔍 AI กำลังอ่านข้อความ LINE…");
+
+        try {
+          const txt = (await askClaude(`คุณเป็นผู้ช่วยอ่านข้อความจองปูน/คอนกรีต จากลูกค้าที่พิมพ์มาใน LINE
+ตอบเป็น JSON array เท่านั้น ห้าม markdown ห้าม backtick ห้ามข้อความนอก JSON
+แต่ละ object มี field: customer, customerCode, siteCode, unit, time (HH:MM), structure, productCode, qty (ตัวเลขเท่านั้น), qc, plan, bookedBy, phone, note
+- unit = ชื่อโครงการ/หน่วยงาน
+- structure = ประเภทงาน เช่น สแลป คาน เสา พื้น ถนน
+- note = รายละเอียดพิเศษ เช่น รางยาว, แปลง, อื่นๆ
+- time ให้แปลงเป็น 24hr HH:MM
+- qty ให้ดึงตัวเลขคิว
+- phone ให้ดึงเบอร์โทรจากข้อความ
+- bookedBy ให้ดึงชื่อช่าง/ผู้จอง
+ถ้าข้อความมีหลายรายการให้แยกเป็นหลาย object`, `แยกข้อความนี้เป็นรายการจองใบงาน:\n\n${lineText}`)) || "[]";
+          const parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+          if (Array.isArray(parsed) && parsed.length) {
+            const newRows = parsed.map(r=>blankRow(r));
+            setRows(prev=>{
+              const hasData = prev.some(r=>r.unit||r.customerCode||r.qty);
+              return hasData ? [...prev, ...newRows] : newRows;
+            });
+            setParseMsg(`✅ แยกข้อมูลได้ ${parsed.length} รายการ → เพิ่มในตารางแล้ว`);
+            setTab("table");
+          } else {
+            setParseMsg("⚠️ ไม่พบข้อมูลในข้อความ กรุณาตรวจสอบ");
+          }
+        } catch(e) { setParseMsg("❌ "+e.message); }
+        setParsing(false);
+      };
+
+      const aiGenerate = async () => {
+        setAiLoading(true); setAiMsg("🤖 AI กำลังสร้างใบงาน…");
+        try {
+          const txt = (await askClaude("ตอบ JSON array เท่านั้น ห้าม markdown ห้าม backtick", `สร้างใบจองงานผลิตคอนกรีต ลองเบิ่ง วันที่ ${beDate} จำนวน 4 รายการ เป็น JSON array แต่ละ item มี: customer, customerCode, siteCode, unit, time, structure, productCode, qty, qc, plan, bookedBy, phone, note`)) || "[]";
+          const parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+          if (Array.isArray(parsed)&&parsed.length) {
+            setRows(parsed.map(r=>blankRow(r)));
+            setAiMsg(`✅ สร้าง ${parsed.length} รายการสำหรับ ${beDate}`);
+          }
+        } catch(e) { setAiMsg("❌ "+e.message); }
+        setAiLoading(false);
+      };
+
+      const aiChat = async () => {
+        if (!chat.trim()) return;
+        setChatBusy(true); setChatOut("");
+        const ctx = rows.map((r,i)=>`#${i+1} ${r.customer} ${r.unit} ${r.time} ${r.structure} ${r.qty}คิว QC:${r.qc} โทร:${r.phone}`).join("\n");
+        try {
+          setChatOut((await askClaude(`ผู้ช่วยผลิตโคราช วันที่ ${beDate}\nข้อมูล:\n${ctx}`, chat)) || "—");
+        } catch(e) { setChatOut("❌ "+e.message); }
+        setChatBusy(false);
+      };
+
+      const exportXLSX = useCallback(async ()=>{
+        const wb = XLSX.utils.book_new();
+        const aoa = [
+          [`รายงานการ รับงานหน่วยผลิต............ABC .จำกัด......................`,"","","","","","",
+           `วันที่.................${beDate}.......................`],
+          ["ลูกค้า","รหัสลูกค้า","SITE CODE","โครงการ/หน่วยงาน","เวลา ถึง SITE.",
+           "โครงสร้าง","รหัสสินค้า","จำนวน (คิว)","Q.C.","แพล้น","ช่างหน้างาน/ผู้จอง","เบอร์โทร หน้างาน","หมายเหตุ"],
+          ...rows.map(r=>[r.customer,r.customerCode,r.siteCode,r.unit,r.time,
+            r.structure,r.productCode,r.qty?parseFloat(r.qty):"",r.qc,r.plan,r.bookedBy,r.phone,r.note]),
+          ["รวมทั้งหมด","","","","","","",totalQty.toFixed(2),"","","","",""],
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"]=[{wch:16},{wch:12},{wch:10},{wch:22},{wch:10},{wch:14},{wch:12},{wch:10},{wch:8},{wch:12},{wch:14},{wch:14},{wch:22}];
+        ws["!merges"]=[
+          {s:{r:0,c:0},e:{r:0,c:6}},{s:{r:0,c:7},e:{r:0,c:12}},
+          {s:{r:rows.length+2,c:0},e:{r:rows.length+2,c:6}},
+        ];
+        XLSX.utils.book_append_sheet(wb, ws, `ใบจอง ${beDate.replace(/\//g,"-")}`);
+        
+        const s2 = XLSX.utils.aoa_to_sheet([
+          [`สรุปใบจอง ${beDate}`],[""],
+          ["รายการทั้งหมด",rows.length],["รวมคิว",totalQty.toFixed(2)],
+          ["ต้อง QC",rows.filter(r=>r.qc==="QC").length],[""],
+          ["ลูกค้า","จำนวน","คิว"],
+          ...[...new Set(rows.map(r=>r.customer).filter(Boolean))].map(c=>[
+            c, rows.filter(r=>r.customer===c).length,
+            rows.filter(r=>r.customer===c).reduce((s,r)=>s+(parseFloat(r.qty)||0),0).toFixed(2),
+          ]),
+        ]);
+        s2["!cols"]=[{wch:24},{wch:12},{wch:10}];
+        XLSX.utils.book_append_sheet(wb, s2, "สรุปยอด");
+        const buf = XLSX.write(wb, {type:"array", bookType:"xlsx"});
+        try {
+          const dl = await claude.use("downloads");
+          if (!dl) { alert("ดาวน์โหลดไม่ได้ในมุมมองนี้"); return; }
+          await dl.save({filename:`ใบจองงานโคราช_${beDate.replace(/\//g,"-")}.xlsx`, data:buf});
+          setSaved(true); setTimeout(()=>setSaved(false),3000);
+        } catch(e) { if (e && e.code !== "declined") alert("บันทึกไฟล์ไม่สำเร็จ: "+(e.message||e.code)); }
+      },[rows,beDate,totalQty]);
+
+      const openGoogleDrive = () => { window.open("https://drive.google.com/drive/my-drive","_blank"); exportXLSX(); };
+
+      const td = {border:"1px solid #d1d5db", padding:"2px 3px"};
+      const inp = {width:"100%",fontSize:11,border:"none",outline:"none",background:"transparent",textAlign:"center",fontFamily:"inherit"};
+      const sel = {...inp, cursor:"pointer"};
+
+      const tabStyle = (t) => ({
+        padding:"9px 18px", fontSize:12, fontWeight:700, cursor:"pointer",
+        border:"none", borderBottom: tab===t ? `3px solid ${C.green}` : "3px solid transparent",
+        background: tab===t ? "#fff" : "transparent",
+        color: tab===t ? C.green : C.gray,
+      });
+
+      return (
+        <div style={{fontFamily:"'Sarabun','Noto Sans Thai',sans-serif",minHeight:"100vh",background:"#f0f4f0"}}>
+
+          {/* HEADER */}
+          <div style={{background:`linear-gradient(135deg,${C.green} 0%,${C.gl} 100%)`,color:"#fff",
+            padding:"12px 20px",boxShadow:"0 2px 8px rgba(0,0,0,.2)",
+            display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontSize:17,fontWeight:700}}>🏗️ ใบจองงาน — ABC.จำกัด</div>
+              <div style={{fontSize:11,opacity:.8}}>ระบบจัดการใบจองผลิตคอนกรีต</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <label style={{fontSize:12,fontWeight:600}}>📅</label>
+              <input type="date" value={bookDate} onChange={e=>setBookDate(e.target.value)}
+                style={{borderRadius:8,border:"none",padding:"6px 10px",fontSize:13,fontWeight:700,outline:"none"}}/>
+              <span style={{fontSize:12,background:"rgba(255,255,255,.2)",borderRadius:6,padding:"4px 10px"}}>{beDate}</span>
+            </div>
+          </div>
+
+          {/* TABS */}
+          <div style={{background:"#f5f5f5",borderBottom:"1px solid #e5e7eb",display:"flex",padding:"0 16px"}}>
+            <button style={tabStyle("line")} onClick={()=>setTab("line")}>💬 วางข้อความ LINE</button>
+            <button style={tabStyle("table")} onClick={()=>setTab("table")}>📋 ตารางจอง ({rows.filter(r=>r.unit||r.qty).length} รายการ)</button>
+            <button style={tabStyle("ai")} onClick={()=>setTab("ai")}>🤖 AI ช่วย</button>
+          </div>
+
+          {/* TAB: LINE Parser */}
+          {tab==="line" && (
+            <div style={{padding:"16px 20px",maxWidth:820,margin:"0 auto"}}>
+              <div style={{background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,.08)",padding:20}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+                  <div style={{background:"#06c755",borderRadius:10,width:40,height:40,
+                    display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>💬</div>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:15,color:"#111"}}>วางข้อความจาก LINE</div>
+                    <div style={{fontSize:12,color:C.gray}}>AI จะแยกข้อมูลและกรอกลงตารางให้อัตโนมัติ</div>
+                  </div>
+                </div>
+
+                <div style={{background:"#f0fdf4",border:"1px dashed #86efac",borderRadius:10,padding:"10px 14px",marginBottom:14}}>
+                  <div style={{fontSize:11,color:C.green,fontWeight:700,marginBottom:6}}>💡 ตัวอย่างข้อความ LINE ที่รองรับ:</div>
+                  <div style={{background:"#dcfce7",borderRadius:"12px 12px 12px 0",
+                    padding:"8px 12px",fontSize:12,color:"#166534",lineHeight:1.8,display:"inline-block",maxWidth:"90%"}}>
+                    จองปูนหน้างานเอวาน่าหนองระเวียง วันที่ 28/6/69 เวลา 09.00 น. st240 จำนวน 7.5 คิว งานเทสแลป แปลง 66 โครงการเอวาน่าหนองระเวียง ขอรางยาว2 ท่อนด้วยค่ะ ช่างหน้างาน ช่างต่อ 098-2460834
+                  </div>
+                </div>
+
+                <textarea
+                  value={lineText}
+                  onChange={e=>setLineText(e.target.value)}
+                  placeholder={`วางข้อความจาก LINE ตรงนี้เลย...\n\nตัวอย่าง:\nจองปูนหน้างาน Bell Concrete.จักยุสัย วันที่ 26/07/69 น. st240 จำนวน 7.5 คิว งานโครงสร้าง concrete slab โครงการลองเทเบิ่งสื่อๆ ขอรางpcv 2 ท่อนด้วย ช่างหน้างาน ช่างมุ่นอุ้ยปุ้ย 444444`}
+                  rows={8}
+                  style={{width:"100%",border:"1.5px solid #d1d5db",borderRadius:10,
+                    padding:"12px 14px",fontSize:13,lineHeight:1.9,outline:"none",
+                    resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",
+                    background: lineText ? "#fff" : "#fafafa"}}
+                />
+
+                <div style={{display:"flex",gap:10,marginTop:12,alignItems:"center",flexWrap:"wrap"}}>
+                  <Btn onClick={parseLineMessage} disabled={parsing||!lineText.trim()}
+                    bg="#06c755" style={{minWidth:220,fontSize:13}}>
+                    {parsing ? "⏳ AI กำลังอ่านข้อความ…" : "🤖 แยกข้อมูลเข้าตาราง"}
+                  </Btn>
+                  <button onClick={()=>setLineText("")}
+                    style={{background:"none",border:"1px solid #d1d5db",borderRadius:8,
+                      padding:"8px 14px",fontSize:12,cursor:"pointer",color:C.gray}}>
+                    🗑️ ล้างข้อความ
+                  </button>
+                  {parseMsg && (
+                    <span style={{
+                      background: parseMsg.startsWith("✅") ? "#d1fae5" : parseMsg.startsWith("⚠️") ? "#fef3c7" : "#fee2e2",
+                      color: parseMsg.startsWith("✅") ? C.green : parseMsg.startsWith("⚠️") ? "#92400e" : C.red,
+                      borderRadius:8, padding:"7px 14px", fontWeight:700, fontSize:12}}>
+                      {parseMsg}
+                    </span>
+                  )}
+                </div>
+
+                <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  {[
+                    ["📍 ชื่อโครงการ","AI ดึงชื่อหน่วยงาน/โครงการให้อัตโนมัติ"],
+                    ["⏰ เวลา","แปลง 09.00 น. → 09:00 ให้เอง"],
+                    ["🏗️ ประเภทงาน","สแลป, คาน, เสา, พื้น ฯลฯ"],
+                    ["📞 เบอร์โทร","ดึงเบอร์ช่างหน้างานให้อัตโนมัติ"],
+                    ["💧 จำนวนคิว","ดึงตัวเลขคิวและชนิดปูน"],
+                    ["📝 หมายเหตุ","รางยาว, แปลง, ข้อมูลพิเศษอื่นๆ"],
+                  ].map(([title,desc],i)=>(
+                    <div key={i} style={{background:"#f8fafc",borderRadius:8,padding:"8px 12px",border:"1px solid #e2e8f0"}}>
+                      <div style={{fontWeight:700,fontSize:11,color:C.green}}>{title}</div>
+                      <div style={{fontSize:11,color:C.gray,marginTop:2}}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB: TABLE */}
+          {tab==="table" && (
+            <div style={{padding:"14px 16px",overflowX:"auto"}}>
+              <div style={{background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,.1)",overflow:"hidden"}}>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",background:"#f0f4f0",borderBottom:"2px solid #d1d5db"}}>
+                  <div style={{background:"#dbeafe",padding:"10px 16px",fontWeight:700,fontSize:13,color:"#1e3a5f",borderRight:"1px solid #d1d5db"}}>
+                    รายงานการ รับงานหน่วยผลิต............ABC.จำกัด......................
+                  </div>
+                  <div style={{background:"#fde8d8",padding:"10px 16px",fontWeight:700,fontSize:13,color:"#7c2d12",textAlign:"right"}}>
+                    วันที่.................{beDate}.......................
+                  </div>
+                </div>
+
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead>
+                    <tr>
+                      {[["ลูกค้า","#fef08a",90],["รหัสลูกค้า","#fef08a",78],["SITE CODE","#bbf7d0",72],
+                        ["โครงการ/หน่วยงาน","#fef08a",130],["เวลา ถึง SITE.","#bbf7d0",72],["โครงสร้าง","#fef08a",96],
+                        ["รหัสสินค้า","#fef08a",78],["จำนวน (คิว)","#fecaca",72],["Q.C.","#e9d5ff",58],
+                        ["แพล้น","#e9d5ff",72],["ช่างหน้างาน/ผู้จอง","#bbf7d0",88],["เบอร์โทร หน้างาน","#bfdbfe",88],
+                        ["หมายเหตุ","#bfdbfe",120],["","#f3f4f6",32],
+                      ].map(([h,bg,w],i)=>(
+                        <th key={i} style={{background:bg,border:"1px solid #9ca3af",padding:"8px 4px",
+                          fontWeight:700,minWidth:w,textAlign:"center",fontSize:10}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row,idx)=>(
+                      <tr key={row.id} style={{background:idx%2===0?"#fff":"#f9fafb"}}>
+                        <td style={{...td,display:"flex",alignItems:"center",gap:2}}>
+                          <select style={{...sel,flex:1}} value={row.customer} onChange={e=>setCell(row.id,"customer",e.target.value)}>
+                            <option value="">เลือกลูกค้า</option>
+                            {customers.map(c=><option key={c}>{c}</option>)}
+                          </select>
+                          <button onClick={()=>addCustomer(row.id)} title="เพิ่มลูกค้าใหม่"
+                            style={{background:C.gl,color:"#fff",border:"none",borderRadius:4,width:16,height:16,
+                              fontSize:11,lineHeight:1,cursor:"pointer",flexShrink:0}}>+</button>
+                        </td>
+                        <td style={td}><input style={inp} value={row.customerCode} placeholder="รหัส" onChange={e=>setCell(row.id,"customerCode",e.target.value)}/></td>
+                        <td style={td}><input style={inp} value={row.siteCode} placeholder="น___" onChange={e=>setCell(row.id,"siteCode",e.target.value)}/></td>
+                        <td style={td}><input style={{...inp,textAlign:"left",paddingLeft:4}} value={row.unit} placeholder="ชื่อหน่วยงาน..." onChange={e=>setCell(row.id,"unit",e.target.value)}/></td>
+                        <td style={td}><input type="time" style={inp} value={row.time} onChange={e=>setCell(row.id,"time",e.target.value)}/></td>
+                        <td style={td}><select style={sel} value={row.structure} onChange={e=>setCell(row.id,"structure",e.target.value)}>
+                          {STRUCTURES.map(s=><option key={s}>{s}</option>)}</select></td>
+                        <td style={td}><input style={inp} value={row.productCode} placeholder="ST240…" onChange={e=>setCell(row.id,"productCode",e.target.value)}/></td>
+                        <td style={td}><input type="number" style={{...inp,color:row.qty?C.red:"#9ca3af",fontWeight:row.qty?700:400}} value={row.qty} placeholder="0" onChange={e=>setCell(row.id,"qty",e.target.value)}/></td>
+                        <td style={td}><select style={{...sel,color:row.qc==="QC"?C.red:"inherit",fontWeight:row.qc?700:400}} value={row.qc} onChange={e=>setCell(row.id,"qc",e.target.value)}>
+                          {QC_OPTIONS.map(q=><option key={q}>{q}</option>)}</select></td>
+                        <td style={td}><select style={sel} value={row.plan} onChange={e=>setCell(row.id,"plan",e.target.value)}>
+                          {PLAN_OPT.map(p=><option key={p}>{p}</option>)}</select></td>
+                        <td style={td}><input style={{...inp,textAlign:"left",paddingLeft:4}} value={row.bookedBy} placeholder="ชื่อช่าง..." onChange={e=>setCell(row.id,"bookedBy",e.target.value)}/></td>
+                        <td style={td}><input style={inp} value={row.phone} placeholder="0xx-xxx-xxxx" onChange={e=>setCell(row.id,"phone",e.target.value)}/></td>
+                        <td style={td}><input style={{...inp,textAlign:"left",paddingLeft:4}} value={row.note} onChange={e=>setCell(row.id,"note",e.target.value)}/></td>
+                        <td style={{...td,textAlign:"center"}}>
+                          <button onClick={()=>delRow(row.id)} style={{color:C.red,background:"none",border:"none",cursor:"pointer",fontSize:14}}>✕</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{background:C.gp}}>
+                      <td colSpan={7} style={{...td,fontWeight:700,color:C.green,padding:"7px 10px"}}>
+                        รวมทั้งหมด {rows.length} รายการ
+                      </td>
+                      <td style={{...td,textAlign:"center",fontWeight:700,color:C.red,fontSize:13}}>
+                        {totalQty.toFixed(2)}
+                      </td>
+                      <td colSpan={6} style={{...td,color:C.green,fontWeight:700,paddingLeft:8}}>คิว</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div style={{display:"flex",gap:10,marginTop:14,flexWrap:"wrap",alignItems:"center"}}>
+                <Btn onClick={addRow} bg={C.gl}>➕ เพิ่มแถว</Btn>
+                <Btn onClick={()=>setTab("line")} bg="#06c755">💬 วางข้อความ LINE</Btn>
+                <Btn onClick={exportXLSX} bg={C.blue} style={{minWidth:180}}>📥 Export Excel</Btn>
+                <Btn onClick={openGoogleDrive} bg="#1a73e8" style={{minWidth:220}}>☁️ บันทึก & เปิด Google Drive</Btn>
+                <Btn onClick={()=>{setRows([blankRow(),blankRow()]);setAiMsg("");setChatOut("");}} bg={C.gray}>🔄 ล้างข้อมูล</Btn>
+                {saved && <span style={{background:"#d1fae5",color:C.green,borderRadius:8,padding:"7px 14px",fontWeight:700,fontSize:12}}>✅ ดาวน์โหลดสำเร็จ!</span>}
+              </div>
+
+              <div style={{marginTop:10,background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:10,padding:"10px 14px",fontSize:12,color:C.blue,lineHeight:1.9}}>
+                <b>💡 Google Drive:</b> Export → เปิด Google Drive → ลากไฟล์วาง (คลิกขวา &gt; เปิดด้วย Google ชีต เพื่อแก้ไขออนไลน์) ✅
+              </div>
+
+              <div style={{marginTop:14,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10}}>
+                {[
+                  {icon:"📋",label:"รายการ",value:rows.length+" รายการ",color:C.green},
+                  {icon:"🏗️",label:"รวมคิว",value:totalQty.toFixed(2)+" คิว",color:C.red},
+                  {icon:"✅",label:"ต้อง QC",value:rows.filter(r=>r.qc==="QC").length+" งาน",color:"#7c3aed"},
+                  {icon:"📞",label:"มีเบอร์โทร",value:rows.filter(r=>r.phone).length+" ราย",color:C.blue},
+                ].map((s,i)=>(
+                  <div key={i} style={{background:"#fff",borderRadius:10,padding:"12px 14px",boxShadow:"0 1px 4px rgba(0,0,0,.08)",borderLeft:`3px solid ${s.color}`}}>
+                    <div style={{fontSize:18}}>{s.icon}</div>
+                    <div style={{fontSize:11,color:C.gray,marginTop:2}}>{s.label}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:s.color}}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: AI */}
+          {tab==="ai" && (
+            <div style={{padding:"16px 20px",maxWidth:820,margin:"0 auto"}}>
+              <div style={{background:"#fff",borderRadius:12,boxShadow:"0 2px 12px rgba(0,0,0,.08)",padding:20}}>
+                <div style={{fontWeight:700,fontSize:15,color:"#111",marginBottom:14}}>🤖 AI ผู้ช่วยวางแผนใบงาน</div>
+
+                <Btn onClick={aiGenerate} disabled={aiLoading} bg={C.gl} style={{marginBottom:12}}>
+                  {aiLoading ? "⏳ กำลังสร้าง…" : `📋 AI สร้างใบงานสำหรับ ${beDate}`}
+                </Btn>
+                {aiMsg && <div style={{background:"#f0fdf4",border:"1px solid #86efac",borderRadius:8,padding:"8px 12px",fontSize:12,color:C.green,marginBottom:14}}>{aiMsg}</div>}
+
+                <div style={{borderTop:"1px solid #e5e7eb",paddingTop:14}}>
+                  <div style={{fontSize:12,fontWeight:600,color:C.gray,marginBottom:8}}>ถาม AI เกี่ยวกับใบงานปัจจุบัน</div>
+                  <div style={{display:"flex",gap:8}}>
+                    <input value={chat} onChange={e=>setChat(e.target.value)} onKeyDown={e=>e.key==="Enter"&&aiChat()}
+                      placeholder="เช่น 'สรุปยอดคิว' / 'งานไหนต้อง QC' / 'เรียงตามเวลา'"
+                      style={{flex:1,border:"1.5px solid #d1d5db",borderRadius:8,padding:"8px 12px",fontSize:12,outline:"none"}}/>
+                    <Btn onClick={aiChat} disabled={chatBusy||!chat.trim()} bg={C.amber}>ถาม</Btn>
+                  </div>
+                  {chatOut && <div style={{marginTop:10,background:"#fffbeb",border:"1px solid #fcd34d",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#374151",whiteSpace:"pre-wrap",lineHeight:1.8}}>{chatOut}</div>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Render App Component
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<KoratBooking />);
+  </script>
+</body>
+</html>
